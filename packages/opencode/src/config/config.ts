@@ -896,19 +896,19 @@ export namespace Config {
           prune: z.boolean().optional().describe("Enable pruning of old tool outputs (default: true)"),
         })
         .optional(),
-      experimental: z
-        .object({
-          hook: z
+          experimental: z
             .object({
-              file_edited: z
-                .record(
-                  z.string(),
-                  z
-                    .object({
-                      command: z.string().array(),
-                      environment: z.record(z.string(), z.string()).optional(),
-                    })
-                    .array(),
+              hook: z
+                .object({
+                  file_edited: z
+                    .record(
+                      z.string(),
+                      z
+                        .object({
+                          command: z.string().array(),
+                          environment: z.record(z.string(), z.string()).optional(),
+                        })
+                        .array(),
                 )
                 .optional(),
               session_completed: z
@@ -917,6 +917,54 @@ export namespace Config {
                   environment: z.record(z.string(), z.string()).optional(),
                 })
                 .array()
+                .optional(),
+              hools: z
+                .object({
+                  pre_run: z
+                    .array(
+                      z.object({
+                        command: z.string().array(),
+                        environment: z.record(z.string(), z.string()).optional(),
+                        working_dir: z.string().optional(),
+                        timeout: z.number().optional(),
+                      })
+                    )
+                    .optional(),
+                  post_run: z
+                    .array(
+                      z.object({
+                        command: z.string().array(),
+                        environment: z.record(z.string(), z.string()).optional(),
+                        working_dir: z.string().optional(),
+                        timeout: z.number().optional(),
+                      })
+                    )
+                    .optional(),
+                  on_error: z
+                    .array(
+                      z.object({
+                        command: z.string().array(),
+                        environment: z.record(z.string(), z.string()).optional(),
+                        working_dir: z.string().optional(),
+                        timeout: z.number().optional(),
+                      })
+                    )
+                    .optional(),
+                  tool: z
+                    .record(
+                      z.string(),
+                      z
+                        .array(
+                          z.object({
+                            command: z.string().array(),
+                            environment: z.record(z.string(), z.string()).optional(),
+                            working_dir: z.string().optional(),
+                            timeout: z.number().optional(),
+                          })
+                        )
+                    )
+                    .optional(),
+                })
                 .optional(),
             })
             .optional(),
