@@ -11,6 +11,7 @@ import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk/v2"
 import { Server } from "../../server/server"
 import { Provider } from "../../provider/provider"
 import { Agent } from "../../agent/agent"
+import * as KG from "../../kg"
 
 const TOOL: Record<string, [string, string]> = {
   todowrite: ["Todo", UI.Style.TEXT_WARNING_BOLD],
@@ -91,8 +92,44 @@ export const RunCommand = cmd({
         type: "string",
         describe: "model variant (provider-specific reasoning effort, e.g., high, max, minimal)",
       })
+      .option("kg", {
+        type: "boolean",
+        describe: "enable knowledge graph logging",
+      })
+      .option("kg-uri", {
+        type: "string",
+        describe: "Neo4j connection URI (default: bolt://localhost:7687)",
+      })
+      .option("kg-user", {
+        type: "string",
+        describe: "Neo4j username (default: neo4j)",
+      })
+      .option("kg-pass", {
+        type: "string",
+        describe: "Neo4j password",
+      })
+      .option("kg-database", {
+        type: "string",
+        describe: "Neo4j database name (default: neo4j)",
+      })
   },
   handler: async (args) => {
+    let kgSessionID: string | undefined
+
+    if (args.kg) {
+      const kgConfig: Partial<KG.KGConfig> = {
+        uri: args.kgUri,
+        username: args.kgUser,
+        password: args.kgPass,
+        database: args.kgDatabase,
+      }
+
+      await KG.initialize(kgConfig)
+      if (KG.isEnabled()) {
+        UI.println(UI.Style.TEXT_INFO + "Knowledge graph logging enabled")
+      }
+    }
+
     let message = [...args.message, ...(args["--"] || [])]
       .map((arg) => (arg.includes(" ") ? `"${arg.replace(/"/g, '\\"')}"` : arg))
       .join(" ")
@@ -134,6 +171,30 @@ export const RunCommand = cmd({
     }
 
     const execute = async (sdk: OpencodeClient, sessionID: string) => {
+      let operationStartTime: number | undefined
+
+      const logToolOperation = async (tool: string, input: any, output?: string, error?: string) => {
+        if (!KG.isEnabled() || !kgSessionID) return
+
+        const duration = operationStartTime ? Date.now() - operationStartTime : 0
+        const opInfo: KG.OperationInfo = {
+          operationID: KG.generateOperationID(),
+          sessionID: kgSessionID,
+          timestamp: new Date(),
+          toolName: tool,
+          toolArgs: JSON.stringify(input),
+          result: output || "",
+          error,
+          duration,
+        }
+        await KG.logOperation(opInfo)
+      }
+
+      const logFileAccess = async (action: string, filePath: string) => {
+        if (!KG.isEnabled() || !kgSessionID) return
+        await KG.logFileAccess(kgSessionID, action, filePath)
+      }
+
       const printEvent = (color: string, type: string, title: string) => {
         UI.println(
           color + `|`,
@@ -167,10 +228,35 @@ export const RunCommand = cmd({
                 part.state.title ||
                 (Object.keys(part.state.input).length > 0 ? JSON.stringify(part.state.input) : "Unknown")
               printEvent(color, tool, title)
+
+              await logToolOperation(part.tool, part.state.input, part.state.output)
+
               if (part.tool === "bash" && part.state.output?.trim()) {
                 UI.println()
                 UI.println(part.state.output)
               }
+
+              if (part.tool === "bash" && part.state.input?.command) {
+                const cmdStr = part.state.input.command
+                if (cmdStr.startsWith("cat ") || cmdStr.includes(" read ")) {
+                  const match = cmdStr.match(/['"]([^'"]+)['"]/)
+                  if (match) await logFileAccess("read", match[1])
+                }
+              }
+
+              if (part.tool === "read") {
+                if (part.state.input?.file) await logFileAccess("read", part.state.input.file)
+              }
+              if (part.tool === "write") {
+                if (part.state.input?.file) await logFileAccess("write", part.state.input.file)
+              }
+              if (part.tool === "edit") {
+                if (part.state.input?.file) await logFileAccess("edit", part.state.input.file)
+              }
+            }
+
+            if (part.type === "tool" && part.state.status === "in-progress") {
+              operationStartTime = Date.now()
             }
 
             if (part.type === "step-start") {
@@ -293,7 +379,29 @@ export const RunCommand = cmd({
             : undefined
 
         const result = await sdk.session.create(title ? { title } : {})
-        return result.data?.id
+        const sid = result.data?.id
+
+        if (KG.isEnabled() && sid) {
+          kgSessionID = KG.generateSessionID()
+          const sessionInfo: KG.SessionInfo = {
+            sessionID: kgSessionID,
+            startTime: new Date(),
+            hostName: Bun.hostname || "localhost",
+            userName: process.env.USER || process.env.USERNAME || "unknown",
+            mode: "run",
+            cwd: process.cwd(),
+            command: "opencode run",
+            args: process.argv.slice(2),
+            requestCount: 0,
+            tokenCount: 0,
+          }
+          await KG.startSession(sessionInfo)
+
+          const projectPath = await KG.detectProjectPath(process.cwd())
+          await KG.logProject(kgSessionID, projectPath)
+        }
+
+        return sid
       })()
 
       if (!sessionID) {
@@ -314,10 +422,29 @@ export const RunCommand = cmd({
         }
       }
 
-      return await execute(sdk, sessionID)
+      try {
+        return await execute(sdk, sessionID)
+      } finally {
+        if (KG.isEnabled() && kgSessionID) {
+          await KG.endSession({
+            ...await (async () => {
+              const stats = await KG.getSessionStats(kgSessionID)
+              return {
+                sessionID: kgSessionID,
+                endTime: new Date(),
+                exitCode: errorMsg ? 1 : 0,
+                error: errorMsg,
+                requestCount: stats?.requestCount as number ?? 0,
+                tokenCount: stats?.tokenCount as number ?? 0,
+              }
+            })(),
+          })
+          await KG.close()
+        }
+      }
     }
 
-    await bootstrap(process.cwd(), async () => {
+      await bootstrap(process.cwd(), async () => {
       const server = Server.listen({ port: args.port ?? 0, hostname: "127.0.0.1" })
       const sdk = createOpencodeClient({ baseUrl: `http://${server.hostname}:${server.port}` })
 
@@ -345,7 +472,29 @@ export const RunCommand = cmd({
             : undefined
 
         const result = await sdk.session.create(title ? { title } : {})
-        return result.data?.id
+        const sid = result.data?.id
+
+        if (KG.isEnabled() && sid) {
+          kgSessionID = KG.generateSessionID()
+          const sessionInfo: KG.SessionInfo = {
+            sessionID: kgSessionID,
+            startTime: new Date(),
+            hostName: Bun.hostname || "localhost",
+            userName: process.env.USER || process.env.USERNAME || "unknown",
+            mode: "run",
+            cwd: process.cwd(),
+            command: "opencode run",
+            args: process.argv.slice(2),
+            requestCount: 0,
+            tokenCount: 0,
+          }
+          await KG.startSession(sessionInfo)
+
+          const projectPath = await KG.detectProjectPath(process.cwd())
+          await KG.logProject(kgSessionID, projectPath)
+        }
+
+        return sid
       })()
 
       if (!sessionID) {
@@ -367,7 +516,27 @@ export const RunCommand = cmd({
         }
       }
 
-      await execute(sdk, sessionID)
+      try {
+        await execute(sdk, sessionID)
+      } finally {
+        if (KG.isEnabled() && kgSessionID) {
+          await KG.endSession({
+            ...await (async () => {
+              const stats = await KG.getSessionStats(kgSessionID)
+              return {
+                sessionID: kgSessionID,
+                endTime: new Date(),
+                exitCode: errorMsg ? 1 : 0,
+                error: errorMsg,
+                requestCount: 0,
+                tokenCount: 0,
+              }
+            })(),
+          })
+          await KG.close()
+        }
+      }
+
       server.stop()
     })
   },

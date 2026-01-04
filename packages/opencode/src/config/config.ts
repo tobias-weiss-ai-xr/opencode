@@ -922,6 +922,45 @@ export namespace Config {
             .optional(),
           chatMaxRetries: z.number().optional().describe("Number of retries for chat completions on failure"),
           disable_paste_summary: z.boolean().optional(),
+          batch_tool: z.boolean().optional().describe("Enable batch tool"),
+          openTelemetry: z
+            .boolean()
+            .optional()
+            .describe("Enable OpenTelemetry spans for AI SDK calls (using 'experimental_telemetry' flag)"),
+          primary_tools: z
+            .array(z.string())
+            .optional()
+            .describe("Tools that should only be available to primary agents."),
+          continue_loop_on_deny: z.boolean().optional().describe("Continue agent loop when a tool call is denied"),
+          mcp_timeout: z
+            .number()
+            .int()
+            .positive()
+            .optional()
+            .describe("Timeout in milliseconds for model context protocol (MCP) requests"),
+          kg: z
+            .object({
+              enabled: z.boolean().optional().describe("Enable knowledge graph logging"),
+              uri: z.string().optional().describe("Neo4j connection URI (default: bolt://localhost:7687)"),
+              username: z.string().optional().describe("Neo4j username (default: neo4j)"),
+              password: z.string().optional().describe("Neo4j password"),
+              database: z.string().optional().describe("Neo4j database name (default: neo4j)"),
+            })
+            .optional()
+            .describe("Knowledge graph configuration"),
+        })
+        .optional(),
+              session_completed: z
+                .object({
+                  command: z.string().array(),
+                  environment: z.record(z.string(), z.string()).optional(),
+                })
+                .array()
+                .optional(),
+            })
+            .optional(),
+          chatMaxRetries: z.number().optional().describe("Number of retries for chat completions on failure"),
+          disable_paste_summary: z.boolean().optional(),
           batch_tool: z.boolean().optional().describe("Enable the batch tool"),
           openTelemetry: z
             .boolean()
